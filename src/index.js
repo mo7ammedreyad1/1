@@ -3,7 +3,7 @@ import { cors } from 'hono/cors'
 
 const app = new Hono()
 
-// Your web app's Firebase configuration
+// Firebase configuration مدمج مباشرة
 const firebaseConfig = {
   apiKey: "AIzaSyC07Gs8L5vxlUmC561PKbxthewA1mrxYDk",
   authDomain: "zylos-test.firebaseapp.com",
@@ -12,243 +12,182 @@ const firebaseConfig = {
   storageBucket: "zylos-test.firebasestorage.app",
   messagingSenderId: "553027007913",
   appId: "1:553027007913:web:2daa37ddf2b2c7c20b00b8"
-}
+};
 
-// Enable CORS for all routes
-app.use('*', cors({
-  origin: ['http://localhost:3000', 'http://127.0.0.1:3000', '*'],
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization'],
-}))
+// Enable CORS
+app.use('*', cors())
 
-// Helper function to interact with Firebase Realtime Database
-async function firebaseRequest(path, method = 'GET', data = null) {
-  const url = `${firebaseConfig.databaseURL}${path}.json`
+// Helper function to make Firebase REST API calls
+async function firebaseRequest(endpoint, method, data = null) {
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:${endpoint}?key=${firebaseConfig.apiKey}`;
   
   const options = {
-    method,
+    method: method,
     headers: {
       'Content-Type': 'application/json',
-    }
-  }
+    },
+  };
   
   if (data) {
-    options.body = JSON.stringify(data)
+    options.body = JSON.stringify(data);
   }
   
-  const response = await fetch(url, options)
-  return await response.json()
+  try {
+    const response = await fetch(url, options);
+    const result = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(result.error?.message || 'Firebase error');
+    }
+    
+    return result;
+  } catch (error) {
+    throw error;
+  }
 }
 
-// Helper function to generate simple token (for demo purposes)
-function generateToken(userId) {
-  return btoa(JSON.stringify({
-    userId,
-    timestamp: Date.now(),
-    expires: Date.now() + (24 * 60 * 60 * 1000) // 24 hours
-  }))
+// Helper function to save user data to Realtime Database
+async function saveUserToDatabase(userId, email, displayName) {
+  const dbUrl = `${firebaseConfig.databaseURL}/users/${userId}.json`;
+  
+  const userData = {
+    email: email,
+    displayName: displayName || email.split('@')[0],
+    createdAt: new Date().toISOString()
+  };
+  
+  const response = await fetch(dbUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(userData)
+  });
+  
+  if (!response.ok) {
+    throw new Error('Failed to save user data');
+  }
+  
+  return userData;
 }
 
-// Helper function to hash password (simple demo - use proper hashing in production)
-async function hashPassword(password) {
-  const encoder = new TextEncoder()
-  const data = encoder.encode(password)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-  const hashArray = Array.from(new Uint8Array(hashBuffer))
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-}
-
-// Routes
+// Root route
 app.get('/', (c) => {
   return c.json({ 
-    message: 'Hono Firebase Auth Server is running!',
+    message: 'Welcome to Hono Firebase Auth Server',
     endpoints: {
       signup: 'POST /api/signup',
       login: 'POST /api/login',
-      profile: 'GET /api/profile',
-      users: 'GET /api/users'
+      user: 'GET /api/user/:userId'
     }
   })
 })
 
-// Sign up endpoint
+// Signup endpoint
 app.post('/api/signup', async (c) => {
   try {
-    const { email, password, name } = await c.req.json()
+    const { email, password, displayName } = await c.req.json();
     
-    if (!email || !password || !name) {
-      return c.json({ error: 'Email, password, and name are required' }, 400)
+    if (!email || !password) {
+      return c.json({ error: 'Email and password are required' }, 400);
     }
     
-    // Check if user already exists
-    const existingUsers = await firebaseRequest('/users')
-    if (existingUsers) {
-      const userExists = Object.values(existingUsers).some(user => user.email === email)
-      if (userExists) {
-        return c.json({ error: 'User already exists' }, 409)
-      }
-    }
-    
-    // Hash password
-    const hashedPassword = await hashPassword(password)
-    
-    // Create user data
-    const userData = {
+    // Create user with Firebase Auth
+    const authResult = await firebaseRequest('signUp', 'POST', {
       email,
-      password: hashedPassword,
-      name,
-      createdAt: new Date().toISOString(),
-      lastLogin: null
-    }
+      password,
+      returnSecureToken: true
+    });
     
-    // Save user to Firebase
-    const result = await firebaseRequest('/users', 'POST', userData)
+    // Save user data to Realtime Database
+    await saveUserToDatabase(authResult.localId, email, displayName);
     
-    if (result && result.name) {
-      const token = generateToken(result.name)
-      return c.json({
-        success: true,
-        message: 'User created successfully',
-        user: {
-          id: result.name,
-          email,
-          name
-        },
-        token
-      })
-    } else {
-      return c.json({ error: 'Failed to create user' }, 500)
-    }
-    
+    return c.json({
+      success: true,
+      user: {
+        id: authResult.localId,
+        email: authResult.email,
+        idToken: authResult.idToken,
+        refreshToken: authResult.refreshToken
+      }
+    });
   } catch (error) {
-    console.error('Signup error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
+    return c.json({ 
+      error: error.message || 'Signup failed' 
+    }, 400);
   }
-})
+});
 
 // Login endpoint
 app.post('/api/login', async (c) => {
   try {
-    const { email, password } = await c.req.json()
+    const { email, password } = await c.req.json();
     
     if (!email || !password) {
-      return c.json({ error: 'Email and password are required' }, 400)
+      return c.json({ error: 'Email and password are required' }, 400);
     }
     
-    // Get all users from Firebase
-    const users = await firebaseRequest('/users')
-    
-    if (!users) {
-      return c.json({ error: 'Invalid credentials' }, 401)
-    }
-    
-    // Find user by email
-    const userEntry = Object.entries(users).find(([id, user]) => user.email === email)
-    
-    if (!userEntry) {
-      return c.json({ error: 'Invalid credentials' }, 401)
-    }
-    
-    const [userId, userData] = userEntry
-    
-    // Verify password
-    const hashedPassword = await hashPassword(password)
-    if (userData.password !== hashedPassword) {
-      return c.json({ error: 'Invalid credentials' }, 401)
-    }
-    
-    // Update last login
-    await firebaseRequest(`/users/${userId}`, 'PATCH', {
-      lastLogin: new Date().toISOString()
-    })
-    
-    const token = generateToken(userId)
+    // Sign in with Firebase Auth
+    const authResult = await firebaseRequest('signInWithPassword', 'POST', {
+      email,
+      password,
+      returnSecureToken: true
+    });
     
     return c.json({
       success: true,
-      message: 'Login successful',
       user: {
-        id: userId,
-        email: userData.email,
-        name: userData.name,
-        lastLogin: userData.lastLogin
-      },
-      token
-    })
-    
+        id: authResult.localId,
+        email: authResult.email,
+        idToken: authResult.idToken,
+        refreshToken: authResult.refreshToken
+      }
+    });
   } catch (error) {
-    console.error('Login error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
+    return c.json({ 
+      error: error.message || 'Login failed' 
+    }, 401);
   }
-})
+});
 
-// Get user profile endpoint
-app.get('/api/profile/:userId', async (c) => {
+// Get user data endpoint
+app.get('/api/user/:userId', async (c) => {
   try {
-    const userId = c.req.param('userId')
+    const userId = c.req.param('userId');
+    const dbUrl = `${firebaseConfig.databaseURL}/users/${userId}.json`;
     
-    const userData = await firebaseRequest(`/users/${userId}`)
+    const response = await fetch(dbUrl);
+    
+    if (!response.ok) {
+      return c.json({ error: 'User not found' }, 404);
+    }
+    
+    const userData = await response.json();
     
     if (!userData) {
-      return c.json({ error: 'User not found' }, 404)
+      return c.json({ error: 'User not found' }, 404);
     }
-    
-    // Remove password from response
-    const { password, ...userProfile } = userData
     
     return c.json({
       success: true,
-      user: {
-        id: userId,
-        ...userProfile
-      }
-    })
-    
+      user: userData
+    });
   } catch (error) {
-    console.error('Profile error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
+    return c.json({ 
+      error: error.message || 'Failed to fetch user data' 
+    }, 500);
   }
+});
+
+// 404 handler
+app.notFound((c) => {
+  return c.json({ error: 'Not Found' }, 404)
 })
 
-// Get all users endpoint (for testing)
-app.get('/api/users', async (c) => {
-  try {
-    const users = await firebaseRequest('/users')
-    
-    if (!users) {
-      return c.json({ success: true, users: [] })
-    }
-    
-    // Remove passwords from response
-    const usersList = Object.entries(users).map(([id, user]) => {
-      const { password, ...userWithoutPassword } = user
-      return {
-        id,
-        ...userWithoutPassword
-      }
-    })
-    
-    return c.json({
-      success: true,
-      users: usersList
-    })
-    
-  } catch (error) {
-    console.error('Users error:', error)
-    return c.json({ error: 'Internal server error' }, 500)
-  }
-})
-
-// Health check endpoint
-app.get('/health', (c) => {
-  return c.json({ 
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    firebase: {
-      projectId: firebaseConfig.projectId,
-      databaseURL: firebaseConfig.databaseURL
-    }
-  })
+// Error handler
+app.onError((err, c) => {
+  console.error('Server error:', err)
+  return c.json({ error: 'Internal Server Error' }, 500)
 })
 
 export default app
