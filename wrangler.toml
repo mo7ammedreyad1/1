@@ -1,6 +1,4 @@
-name = "hono-firebase-auth"
+name = "hono-firebase-worker"  # غير ده لاسم الـ Worker اللي عايزه
 main = "src/index.js"
-compatibility_date = "2024-01-01"
-
-[env.production]
+compatibility_date = "2025-07-30"  # تاريخ اليوم للتوافق
 workers_dev = true

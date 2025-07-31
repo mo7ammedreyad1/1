@@ -1,9 +1,6 @@
-import { Hono } from 'hono'
-import { cors } from 'hono/cors'
+import { Hono } from 'hono';
 
-const app = new Hono()
-
-// Firebase configuration مدمج مباشرة
+// Your web app's Firebase configuration (أضفته مباشرة كما طلبت)
 const firebaseConfig = {
   apiKey: "AIzaSyC07Gs8L5vxlUmC561PKbxthewA1mrxYDk",
   authDomain: "zylos-test.firebaseapp.com",
@@ -14,180 +11,63 @@ const firebaseConfig = {
   appId: "1:553027007913:web:2daa37ddf2b2c7c20b00b8"
 };
 
-// Enable CORS
-app.use('*', cors())
+const app = new Hono();
 
-// Helper function to make Firebase REST API calls
-async function firebaseRequest(endpoint, method, data = null) {
-  const url = `https://identitytoolkit.googleapis.com/v1/accounts:${endpoint}?key=${firebaseConfig.apiKey}`;
-  
-  const options = {
-    method: method,
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  };
-  
-  if (data) {
-    options.body = JSON.stringify(data);
-  }
-  
+app.post('/signup', async (c) => {
   try {
-    const response = await fetch(url, options);
-    const result = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(result.error?.message || 'Firebase error');
-    }
-    
-    return result;
-  } catch (error) {
-    throw error;
-  }
-}
+    const { email, password, name } = await c.req.json();
 
-// Helper function to save user data to Realtime Database
-async function saveUserToDatabase(userId, email, displayName) {
-  const dbUrl = `${firebaseConfig.databaseURL}/users/${userId}.json`;
-  
-  const userData = {
-    email: email,
-    displayName: displayName || email.split('@')[0],
-    createdAt: new Date().toISOString()
-  };
-  
-  const response = await fetch(dbUrl, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(userData)
-  });
-  
-  if (!response.ok) {
-    throw new Error('Failed to save user data');
-  }
-  
-  return userData;
-}
-
-// Root route
-app.get('/', (c) => {
-  return c.json({ 
-    message: 'Welcome to Hono Firebase Auth Server',
-    endpoints: {
-      signup: 'POST /api/signup',
-      login: 'POST /api/login',
-      user: 'GET /api/user/:userId'
-    }
-  })
-})
-
-// Signup endpoint
-app.post('/api/signup', async (c) => {
-  try {
-    const { email, password, displayName } = await c.req.json();
-    
-    if (!email || !password) {
-      return c.json({ error: 'Email and password are required' }, 400);
-    }
-    
-    // Create user with Firebase Auth
-    const authResult = await firebaseRequest('signUp', 'POST', {
-      email,
-      password,
-      returnSecureToken: true
+    // Signup using Firebase Auth REST API
+    const signupResponse = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, returnSecureToken: true })
     });
-    
-    // Save user data to Realtime Database
-    await saveUserToDatabase(authResult.localId, email, displayName);
-    
-    return c.json({
-      success: true,
-      user: {
-        id: authResult.localId,
-        email: authResult.email,
-        idToken: authResult.idToken,
-        refreshToken: authResult.refreshToken
-      }
+
+    const signupData = await signupResponse.json();
+    if (!signupResponse.ok) {
+      return c.json({ error: signupData.error.message }, 400);
+    }
+
+    const uid = signupData.localId;
+    const idToken = signupData.idToken;
+
+    // Store user data in Realtime Database using REST API (with idToken for auth)
+    const dbUrl = `${firebaseConfig.databaseURL}/users/${uid}.json?auth=${idToken}`;
+    await fetch(dbUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email, createdAt: new Date().toISOString() })
     });
+
+    return c.json({ message: 'Signup successful', uid, token: idToken });
   } catch (error) {
-    return c.json({ 
-      error: error.message || 'Signup failed' 
-    }, 400);
+    return c.json({ error: 'Signup failed' }, 500);
   }
 });
 
-// Login endpoint
-app.post('/api/login', async (c) => {
+app.post('/login', async (c) => {
   try {
     const { email, password } = await c.req.json();
-    
-    if (!email || !password) {
-      return c.json({ error: 'Email and password are required' }, 400);
+
+    // Login using Firebase Auth REST API
+    const loginResponse = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${firebaseConfig.apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, returnSecureToken: true })
+    });
+
+    const loginData = await loginResponse.json();
+    if (!loginResponse.ok) {
+      return c.json({ error: loginData.error.message }, 400);
     }
-    
-    // Sign in with Firebase Auth
-    const authResult = await firebaseRequest('signInWithPassword', 'POST', {
-      email,
-      password,
-      returnSecureToken: true
-    });
-    
-    return c.json({
-      success: true,
-      user: {
-        id: authResult.localId,
-        email: authResult.email,
-        idToken: authResult.idToken,
-        refreshToken: authResult.refreshToken
-      }
-    });
+
+    return c.json({ message: 'Login successful', token: loginData.idToken });
   } catch (error) {
-    return c.json({ 
-      error: error.message || 'Login failed' 
-    }, 401);
+    return c.json({ error: 'Login failed' }, 500);
   }
 });
 
-// Get user data endpoint
-app.get('/api/user/:userId', async (c) => {
-  try {
-    const userId = c.req.param('userId');
-    const dbUrl = `${firebaseConfig.databaseURL}/users/${userId}.json`;
-    
-    const response = await fetch(dbUrl);
-    
-    if (!response.ok) {
-      return c.json({ error: 'User not found' }, 404);
-    }
-    
-    const userData = await response.json();
-    
-    if (!userData) {
-      return c.json({ error: 'User not found' }, 404);
-    }
-    
-    return c.json({
-      success: true,
-      user: userData
-    });
-  } catch (error) {
-    return c.json({ 
-      error: error.message || 'Failed to fetch user data' 
-    }, 500);
-  }
-});
-
-// 404 handler
-app.notFound((c) => {
-  return c.json({ error: 'Not Found' }, 404)
-})
-
-// Error handler
-app.onError((err, c) => {
-  console.error('Server error:', err)
-  return c.json({ error: 'Internal Server Error' }, 500)
-})
-
-export default app
+export default {
+  fetch: app.fetch
+};
